@@ -19,7 +19,7 @@ Rather than surfacing a single national headline forecast, the dashboard emphasi
 
 ## Live Demo
 
-Deployed via Streamlit Community Cloud: *(link coming)*
+Deployed via Streamlit Community Cloud: **https://housing-demand-forecast.streamlit.app/**
 
 ## Model Architecture
 
