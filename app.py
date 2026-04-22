@@ -44,21 +44,28 @@ with tab_about:
         INDENG 243 Modules 1–2 into a decision-support tool for two audiences:
 
         - **Buyers and sellers** use the *Price Map* tab to see how ZIP-code-level
-          home values have moved, compare regions, and (optionally) weigh school
-          quality alongside price.
+        home values have moved across 25+ years, compare regions, and drill into
+        any single ZIP's full price history.
         - **Supply-chain actors** — builders, material suppliers, contractors —
-          use the *Supply Chain* tab to explore how rates, tariffs, and material
-          costs interact with the permit → start → completion pipeline.
+        use the *Supply Chain* tab to explore the residential construction
+        pipeline (permits → starts → completions), material-cost pressure,
+        tariff shocks, and the interaction between mortgage rates and housing
+        activity.
 
         **Model architecture.** A two-layer parallel pipeline: a macro Ridge
         baseline (Part A) produces division-level HPI forecasts that feed two
         parallel downstream Random Forest models — ZIP-level prices (B-1) and
-        division-level sales volume (B-2).
+        division-level sales volume (B-2). The supply-side construction model
+        operates alongside these, drawing on the same macro signals to track
+        the permit-start-completion pipeline.
 
         **Data sources.** Zillow ZHVI, Census TIGER/Line ZCTA shapefiles, FRED
         (mortgage rates, HPI, macro series), Realtor sales data, Census building
-        permits, BLS employment, USITC tariff data.
+        permits and new residential construction, BLS employment, USITC tariff
+        data.
 
         **Source code:** https://github.com/XAPP-P/housing-demand-forecast
+
+        UC Berkeley INDENG 243 (Spring 2026) Group 9: Jiajun Wang, Jingyi Chen, Johnathan Wu, Linzhi Wu, Yifei Yang,  Yijun Gu, and Yizhou Zheng
         """
     )

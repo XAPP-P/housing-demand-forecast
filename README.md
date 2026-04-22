@@ -10,12 +10,24 @@ Interactive, ZIP-code-level dashboard integrating housing price forecasts with r
 
 ## Overview
 
-This dashboard translates the models built in Modules 1–2 into a decision-support tool for two distinct audiences:
+This dashboard translates the models built in Modules 1–2 into a
+decision-support tool for two distinct audiences:
 
-- **Homebuyers and sellers** — view historical ZIP-code-level median home values across the United States, play through history to see how markets have moved, and (optionally) overlay school-district ratings.
-- **Supply-chain actors** — builders, material suppliers, and contractors can explore how mortgage rates, tariff regimes, and material-cost regimes interact with the construction pipeline (permits → starts → completions) to inform production planning.
+- **Homebuyers and sellers** — view historical ZIP-code-level median home
+  values across the United States, scrub through 25+ years of market
+  history with a time slider, watch the market move with a play-through
+  animation, and drill into any single ZIP's full price history as a line
+  chart.
+- **Supply-chain actors** — builders, material suppliers, and contractors
+  can explore the residential construction pipeline (permits → starts →
+  completions) alongside material-cost pressure, tariff-regime signals,
+  and the interaction between mortgage rates and housing activity.
 
-Rather than surfacing a single national headline forecast, the dashboard emphasizes **geographic granularity** and **scenario exploration**, reflecting the reality that housing decisions are deeply local and supply-chain decisions are deeply conditional.
+Rather than surfacing a single national headline forecast, the dashboard
+emphasizes **geographic granularity** on the demand side and **pipeline
+visibility** on the supply side, reflecting the reality that housing
+decisions are deeply local and supply-chain decisions are deeply
+conditional.
 
 ## Live Demo
 
