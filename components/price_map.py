@@ -7,11 +7,22 @@ which made "Play" animation choppy and even manual scrubbing sluggish on
 large states like CA (~2,500 ZIPs).
 
 This revision builds a single self-contained interactive HTML page per state,
-with **all monthly prices baked into the GeoJSON features** and all
-interactivity (slider + dropdowns + play/pause + hover tooltips + live
-summary stats) implemented in client-side JavaScript. After the first
-state-level load, every subsequent interaction runs entirely in the
-browser — no server round-trip, no Streamlit rerun.
+with **all monthly prices (historical + forecast) baked into the GeoJSON
+features** and all interactivity (slider + dropdowns + play/pause + hover
+tooltips + live summary stats + ZIP price-history chart) implemented in
+client-side JavaScript. After the first state-level load, every subsequent
+interaction runs entirely in the browser — no server round-trip, no
+Streamlit rerun.
+
+Historical vs. forecast
+-----------------------
+The timeline seamlessly extends past the last Zillow observation into the
+Module 2 Random Forest forecast (Feb–Jun 2026). Forecast months use a
+distinct cool-palette (blue→purple) color scale instead of the warm
+(yellow→red) scale used for historical months, so the shift from observed
+to predicted is visible in the map coloring itself rather than relying on
+labels alone. Tooltips, summary stats, and the per-ZIP line chart all
+indicate forecast months explicitly.
 
 Trade-offs
 ----------
@@ -75,12 +86,47 @@ def _load_state_geometry(state_abbr: str) -> gpd.GeoDataFrame:
 
 @st.cache_data(show_spinner=False)
 def _load_state_prices(state_abbr: str) -> pd.DataFrame:
+    """Historical Zillow prices filtered to ZIPs in this state."""
     zcta = _load_state_geometry(state_abbr)
     zips = set(zcta["zip_code"])
     df = pd.read_parquet(DATA_DIR / "zillow_prices_long.parquet")
     df = df[df["zip_code"].isin(zips)].copy()
     df["date"] = pd.to_datetime(df["date"])
+    df["is_forecast"] = False
+    df = df.rename(columns={"zhvi": "price"})
     return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def _load_state_forecast(state_abbr: str) -> pd.DataFrame:
+    """Module 2 Random Forest forecast for ZIPs in this state.
+
+    Returns an empty DataFrame (same schema) if the forecast parquet
+    isn't present — keeps the dashboard functional even without forecast.
+    """
+    forecast_path = DATA_DIR / "zillow_forecast_long.parquet"
+    if not forecast_path.exists():
+        return pd.DataFrame(columns=["zip_code", "date", "price", "is_forecast"])
+
+    zcta = _load_state_geometry(state_abbr)
+    zips = set(zcta["zip_code"])
+    df = pd.read_parquet(forecast_path)
+    df = df[df["zip_code"].isin(zips)].copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["is_forecast"] = True
+    df = df.rename(columns={"zhvi_forecast": "price"})
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def _load_state_combined(state_abbr: str) -> pd.DataFrame:
+    """Historical + forecast concatenated, sorted by (zip, date)."""
+    hist = _load_state_prices(state_abbr)
+    fc = _load_state_forecast(state_abbr)
+    if len(fc) == 0:
+        return hist
+    combined = pd.concat([hist, fc], ignore_index=True)
+    return combined.sort_values(["zip_code", "date"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------
@@ -100,18 +146,27 @@ def _safe_json(obj) -> str:
 def build_state_html(state_abbr: str) -> str:
     """Render the self-contained interactive HTML for one state.
 
-    Bakes all monthly prices into GeoJSON feature properties. Returns an
-    HTML string ready to hand to st.components.v1.html().
+    Bakes historical + forecast monthly prices into GeoJSON feature properties,
+    along with a per-month is_forecast flag. Returns an HTML string ready to
+    hand to st.components.v1.html().
     """
     zcta = _load_state_geometry(state_abbr)
-    prices = _load_state_prices(state_abbr)
+    combined = _load_state_combined(state_abbr)
 
     # Pivot to wide: zip × month → easy per-ZIP extraction
-    wide = prices.pivot_table(
-        index="zip_code", columns="date", values="zhvi", aggfunc="first"
+    wide = combined.pivot_table(
+        index="zip_code", columns="date", values="price", aggfunc="first"
     )
     months = sorted(wide.columns.tolist())
     month_keys = [pd.Timestamp(m).strftime("%Y-%m") for m in months]
+
+    # Build a parallel is_forecast flag for each month (same order as months).
+    forecast_months = set(combined.loc[combined["is_forecast"], "date"].unique())
+    is_forecast_flags = [1 if m in forecast_months else 0 for m in months]
+    first_forecast_idx = next(
+        (i for i, f in enumerate(is_forecast_flags) if f == 1),
+        len(months),  # == len(months) means no forecast
+    )
 
     # Build GeoJSON, embedding a compact prices array aligned to month_keys.
     # Rounding to integer dollars keeps the JSON small (~40% smaller than
@@ -141,7 +196,10 @@ def build_state_html(state_abbr: str) -> str:
     geojson = {"type": "FeatureCollection", "features": features}
 
     # Color-scale anchors: 2nd and 98th percentile across all time.
-    flat = prices["zhvi"].dropna()
+    # We use the combined (historical + forecast) distribution so that when
+    # the slider is on a forecast month, the color range still makes sense
+    # relative to historical context.
+    flat = combined["price"].dropna()
     vmin = int(round(float(flat.quantile(0.02))))
     vmax = int(round(float(flat.quantile(0.98))))
 
@@ -156,6 +214,8 @@ def build_state_html(state_abbr: str) -> str:
         "__STATE_NAME__": _safe_json(STATE_NAMES.get(state_abbr, state_abbr)),
         "__MONTHS__": _safe_json(month_keys),
         "__YEARS__": _safe_json(years),
+        "__IS_FORECAST__": _safe_json(is_forecast_flags),
+        "__FIRST_FORECAST_IDX__": str(first_forecast_idx),
         "__GEOJSON__": _safe_json(geojson),
         "__BOUNDS__": _safe_json(bounds),
         "__VMIN__": str(vmin),
@@ -178,7 +238,10 @@ def render_price_map() -> None:
     st.caption(
         "Pick a state. Inside the widget you can drag the time slider, "
         "jump to a specific year/month, or press **Play** to watch the "
-        "market move. Hover any ZIP for details."
+        "market move. The timeline extends past Jan 2026 into our "
+        "Module 2 forecast (Feb–Jun 2026), shown in a cool palette to "
+        "distinguish predicted from observed values. Hover any ZIP for "
+        "details; click one to load its full price history."
     )
 
     states = list_available_states()
@@ -246,6 +309,18 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     color: var(--primary); margin-left: auto;
     font-variant-numeric: tabular-nums;
   }
+  .month-display.forecast {
+    color: #6b21a8;  /* deep purple to signal forecast mode */
+  }
+  .month-display .badge {
+    display: none;
+    font-size: 11px; font-weight: 600;
+    background: #6b21a8; color: white;
+    padding: 2px 8px; border-radius: 10px;
+    margin-left: 8px; vertical-align: middle;
+    letter-spacing: 0.3px;
+  }
+  .month-display.forecast .badge { display: inline-block; }
 
   .slider-wrap {
     position: relative;
@@ -304,12 +379,22 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     padding: 4px 0;
     font-variant-numeric: tabular-nums;
   }
+  .legend-label { font-weight: 500; color: var(--text); min-width: 68px; }
   .legend-gradient {
     flex-grow: 1; height: 10px;
     border-radius: 3px;
+    transition: opacity 0.2s;
+  }
+  .legend-gradient.historical {
     background: linear-gradient(to right,
       #ffffcc 0%, #ffeda0 25%, #fd8d3c 50%, #e31a1c 75%, #800026 100%);
   }
+  .legend-gradient.forecast {
+    background: linear-gradient(to right,
+      #edf8fb 0%, #b3cde3 25%, #8c96c6 50%, #8856a7 75%, #4d004b 100%);
+  }
+  .legend-gradient.inactive { opacity: 0.28; }
+  .legend-gradient.active { opacity: 1; }
 
   #map { height: 440px; border-radius: 4px; background: #eee; }
 
@@ -426,7 +511,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       <select id="year-select"></select>
       <select id="month-select"></select>
     </div>
-    <div class="month-display" id="current-month">—</div>
+    <div class="month-display" id="current-month">—<span class="badge">FORECAST</span></div>
   </div>
 
   <div class="slider-wrap">
@@ -435,9 +520,16 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 
   <div class="legend-row">
+    <span class="legend-label">Historical</span>
     <span id="legend-min">—</span>
-    <div class="legend-gradient" title="Median Home Value — color scale pinned to 2nd–98th percentile across this state's entire history"></div>
+    <div class="legend-gradient historical active" id="legend-hist" title="Observed median home value — source: Zillow ZHVI"></div>
     <span id="legend-max">—</span>
+  </div>
+  <div class="legend-row">
+    <span class="legend-label">Forecast</span>
+    <span id="legend-min-fc">—</span>
+    <div class="legend-gradient forecast inactive" id="legend-fc" title="Predicted median home value — Module 2 Random Forest (Feb–Jun 2026)"></div>
+    <span id="legend-max-fc">—</span>
   </div>
 
   <div id="map"></div>
@@ -476,18 +568,22 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 (function() {
   // ----- Injected data -----
-  const STATE_ABBR = __STATE_ABBR__;
-  const STATE_NAME = __STATE_NAME__;
-  const MONTHS     = __MONTHS__;
-  const YEARS      = __YEARS__;
-  const GEOJSON    = __GEOJSON__;
-  const BOUNDS     = __BOUNDS__;
-  const VMIN       = __VMIN__;
-  const VMAX       = __VMAX__;
+  const STATE_ABBR          = __STATE_ABBR__;
+  const STATE_NAME          = __STATE_NAME__;
+  const MONTHS              = __MONTHS__;
+  const YEARS               = __YEARS__;
+  const IS_FORECAST         = __IS_FORECAST__;       // 0/1 per month, aligned to MONTHS
+  const FIRST_FORECAST_IDX  = __FIRST_FORECAST_IDX__; // == MONTHS.length if no forecast
+  const GEOJSON             = __GEOJSON__;
+  const BOUNDS              = __BOUNDS__;
+  const VMIN                = __VMIN__;
+  const VMAX                = __VMAX__;
 
   const PLAY_INTERVAL_MS = 180;
   const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun',
                        'Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  const HAS_FORECAST = FIRST_FORECAST_IDX < MONTHS.length;
 
   // ----- DOM refs -----
   const playBtn         = document.getElementById('play-btn');
@@ -499,6 +595,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   const featureTooltip  = document.getElementById('feature-tooltip');
   const legendMinEl     = document.getElementById('legend-min');
   const legendMaxEl     = document.getElementById('legend-max');
+  const legendMinFcEl   = document.getElementById('legend-min-fc');
+  const legendMaxFcEl   = document.getElementById('legend-max-fc');
+  const legendHistEl    = document.getElementById('legend-hist');
+  const legendFcEl      = document.getElementById('legend-fc');
   const statCount       = document.getElementById('stat-count');
   const statMedian      = document.getElementById('stat-median');
   const statP25         = document.getElementById('stat-p25');
@@ -531,23 +631,31 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     return MONTH_NAMES[m-1] + ' ' + y;
   }
 
-  // ----- Color scale (5-stop linear, YlOrRd) -----
-  const STOPS = [
+  // ----- Color scales -----
+  // Historical: YlOrRd (cream → dark red)
+  // Forecast:   BuPu-like (light blue → deep purple)
+  // Both share the same VMIN/VMAX anchors so the visual shift is purely
+  // about palette, not scale.
+  const STOPS_HIST = [
     [0.00, [255, 255, 204]],
     [0.25, [255, 237, 160]],
     [0.50, [253, 141,  60]],
     [0.75, [227,  26,  28]],
     [1.00, [128,   0,  38]],
   ];
-  function colorFor(value) {
-    if (value === null || value === undefined || isNaN(value)) return '#e5e5e5';
-    let t = (value - VMIN) / (VMAX - VMIN);
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    for (let i = 0; i < STOPS.length - 1; i++) {
-      if (t <= STOPS[i+1][0]) {
-        const t0 = STOPS[i][0], t1 = STOPS[i+1][0];
-        const c0 = STOPS[i][1], c1 = STOPS[i+1][1];
+  const STOPS_FC = [
+    [0.00, [237, 248, 251]],
+    [0.25, [179, 205, 227]],
+    [0.50, [140, 150, 198]],
+    [0.75, [136,  86, 167]],
+    [1.00, [ 77,   0,  75]],
+  ];
+
+  function _interp(t, stops) {
+    for (let i = 0; i < stops.length - 1; i++) {
+      if (t <= stops[i+1][0]) {
+        const t0 = stops[i][0], t1 = stops[i+1][0];
+        const c0 = stops[i][1], c1 = stops[i+1][1];
         const f = (t1 === t0) ? 0 : (t - t0) / (t1 - t0);
         const r = Math.round(c0[0] + f * (c1[0] - c0[0]));
         const g = Math.round(c0[1] + f * (c1[1] - c0[1]));
@@ -555,7 +663,20 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         return 'rgb(' + r + ',' + g + ',' + b + ')';
       }
     }
-    return 'rgb(128,0,38)';
+    const last = stops[stops.length - 1][1];
+    return 'rgb(' + last[0] + ',' + last[1] + ',' + last[2] + ')';
+  }
+
+  function colorFor(value, isForecastMonth) {
+    if (value === null || value === undefined || isNaN(value)) return '#e5e5e5';
+    let t = (value - VMIN) / (VMAX - VMIN);
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    return _interp(t, isForecastMonth ? STOPS_FC : STOPS_HIST);
+  }
+
+  function isForecastIdx(idx) {
+    return IS_FORECAST[idx] === 1;
   }
 
   // ----- Map -----
@@ -573,8 +694,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   function styleFeature(feature) {
     const price = feature.properties.prices[currentIdx];
+    const fc = isForecastIdx(currentIdx);
     return {
-      fillColor: colorFor(price),
+      fillColor: colorFor(price, fc),
       weight: 0.3,
       color: 'white',
       fillOpacity: (price === null || price === undefined) ? 0.35 : 0.78,
@@ -605,12 +727,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (!hoveredFeature) return;
     const p = hoveredFeature.properties;
     const price = p.prices[currentIdx];
+    const fc = isForecastIdx(currentIdx);
+    const valueLabel = fc
+      ? 'Forecast (predicted): ' + fmtPrice(price)
+      : fmtPrice(price);
     featureTooltip.innerHTML =
       '<div><span class="k">ZIP</span> '    + p.zip    + '</div>' +
       '<div><span class="k">City</span> '   + (p.city   || '—') + '</div>' +
       '<div><span class="k">Metro</span> '  + (p.metro  || '—') + '</div>' +
       '<div><span class="k">County</span> ' + (p.county || '—') + '</div>' +
-      '<div><span class="k">Value</span> '  + fmtPrice(price)   + '</div>';
+      '<div><span class="k">' + (fc ? 'Value' : 'Value') + '</span> '
+        + valueLabel + '</div>';
   }
   function positionFeatureTooltip(e) {
     // pageX/pageY account for scroll within the iframe
@@ -651,14 +778,23 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   function updateMap(newIdx) {
     currentIdx = newIdx;
     geojsonLayer.setStyle(styleFeature);
-    currentMonthEl.textContent = fmtMonthYear(currentIdx);
+    const fc = isForecastIdx(currentIdx);
+    currentMonthEl.firstChild.textContent = fmtMonthYear(currentIdx);
+    currentMonthEl.classList.toggle('forecast', fc);
+    // Legend emphasis: active palette at full opacity, other muted.
+    if (legendHistEl && legendFcEl) {
+      legendHistEl.classList.toggle('active', !fc);
+      legendHistEl.classList.toggle('inactive', fc);
+      legendFcEl.classList.toggle('active', fc);
+      legendFcEl.classList.toggle('inactive', !fc);
+    }
     slider.value = String(currentIdx);
     const parts = MONTHS[currentIdx].split('-');
     yearSelect.value  = parts[0];
     monthSelect.value = String(parseInt(parts[1], 10));
     updateStats();
     renderFeatureTooltip();   // keep hover tooltip's Value in sync with time
-    refreshChartMarker();     // move the red dot along the line chart
+    refreshChartMarker();     // move the marker dot along the line chart
   }
 
   // ----- Populate dropdowns -----
@@ -744,6 +880,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   // ----- Initial render -----
   legendMinEl.textContent = fmtPrice(VMIN);
   legendMaxEl.textContent = fmtPrice(VMAX);
+  legendMinFcEl.textContent = fmtPrice(VMIN);
+  legendMaxFcEl.textContent = fmtPrice(VMAX);
+  // If no forecast data, hide the forecast legend row entirely
+  if (!HAS_FORECAST) {
+    const fcRow = legendFcEl ? legendFcEl.parentElement : null;
+    if (fcRow) fcRow.style.display = 'none';
+  }
   updateMap(MONTHS.length - 1);
 
   // ===================================================================
@@ -781,8 +924,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   function currentMonthMarkerData() {
-    // Array of nulls except at currentIdx — for the red-dot "current month"
-    // marker dataset. Updated on every updateMap() call.
+    // Array of nulls except at currentIdx — for the "current month" marker
+    // dataset. Marker color adapts to forecast/historical mode.
     const arr = new Array(MONTHS.length).fill(null);
     if (currentZip) {
       const feature = findFeatureByZip(currentZip);
@@ -796,9 +939,36 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   function refreshChartMarker() {
     if (chart && currentZip) {
-      chart.data.datasets[1].data = currentMonthMarkerData();
+      // Dataset index 2 is the current-month marker in the new layout.
+      chart.data.datasets[2].data = currentMonthMarkerData();
+      // Marker color shifts purple when in forecast months, red otherwise.
+      const fc = isForecastIdx(currentIdx);
+      chart.data.datasets[2].pointBackgroundColor = fc ? '#6b21a8' : '#e31a1c';
       chart.update('none');
     }
+  }
+
+  function splitHistoricalForecast(prices) {
+    // Returns {hist, fc} where each is an array of same length as MONTHS,
+    // with nulls outside its respective segment. To make the two lines
+    // visually connect at the boundary, both segments keep the last
+    // historical value at index FIRST_FORECAST_IDX-1 AND the forecast
+    // segment also starts from that same index with the same value.
+    const hist = new Array(MONTHS.length).fill(null);
+    const fc   = new Array(MONTHS.length).fill(null);
+    for (let i = 0; i < prices.length; i++) {
+      if (IS_FORECAST[i] === 1) {
+        fc[i] = prices[i];
+      } else {
+        hist[i] = prices[i];
+      }
+    }
+    // Bridge: copy the last historical point into the forecast array at
+    // the same index so Chart.js draws a continuous line across the seam.
+    if (HAS_FORECAST && FIRST_FORECAST_IDX > 0) {
+      fc[FIRST_FORECAST_IDX - 1] = hist[FIRST_FORECAST_IDX - 1];
+    }
+    return { hist: hist, fc: fc };
   }
 
   function drawZipChart(zip) {
@@ -828,14 +998,16 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     if (chart) chart.destroy();
 
+    const split = splitHistoricalForecast(p.prices);
+
     chart = new Chart(chartCanvas.getContext('2d'), {
       type: 'line',
       data: {
         labels: MONTHS,
         datasets: [
           {
-            label: 'ZIP ' + z,
-            data: p.prices,
+            label: 'Historical (Zillow ZHVI)',
+            data: split.hist,
             borderColor: '#2E86AB',
             backgroundColor: 'rgba(46,134,171,0.08)',
             borderWidth: 2,
@@ -846,10 +1018,23 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             spanGaps: false,
           },
           {
+            label: 'Forecast (Module 2 RF)',
+            data: split.fc,
+            borderColor: '#8856a7',
+            backgroundColor: 'rgba(136,86,167,0.12)',
+            borderWidth: 2,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.15,
+            fill: true,
+            spanGaps: false,
+          },
+          {
             label: 'Current month',
             data: currentMonthMarkerData(),
             pointRadius: 6,
-            pointBackgroundColor: '#e31a1c',
+            pointBackgroundColor: isForecastIdx(currentIdx) ? '#6b21a8' : '#e31a1c',
             pointBorderColor: 'white',
             pointBorderWidth: 2,
             showLine: false,
@@ -862,17 +1047,29 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { display: false },
+          legend: {
+            display: HAS_FORECAST,
+            position: 'top',
+            align: 'end',
+            labels: {
+              filter: function(item) { return item.text !== 'Current month'; },
+              font: { size: 11 },
+              boxWidth: 18,
+              boxHeight: 2,
+            }
+          },
           tooltip: {
             callbacks: {
               title: function(items) {
                 if (!items.length) return '';
                 const parts = items[0].label.split('-').map(Number);
-                return MONTH_NAMES[parts[1]-1] + ' ' + parts[0];
+                const idx = MONTHS.indexOf(items[0].label);
+                const tag = (idx >= 0 && IS_FORECAST[idx] === 1) ? ' · forecast' : '';
+                return MONTH_NAMES[parts[1]-1] + ' ' + parts[0] + tag;
               },
               label: function(ctx) {
                 if (ctx.parsed.y === null || ctx.parsed.y === undefined) return null;
-                if (ctx.datasetIndex === 1) return null;  // hide duplicate for marker
+                if (ctx.datasetIndex === 2) return null;  // hide the marker row
                 return '$' + Math.round(ctx.parsed.y).toLocaleString('en-US');
               }
             }
