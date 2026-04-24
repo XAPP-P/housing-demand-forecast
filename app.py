@@ -44,8 +44,10 @@ with tab_about:
         INDENG 243 Modules 1–2 into a decision-support tool for two audiences:
 
         - **Buyers and sellers** use the *Price Map* tab to see how ZIP-code-level
-        home values have moved across 25+ years, compare regions, and drill into
-        any single ZIP's full price history.
+        home values have moved across 25+ years, view the Module 2 Random
+        Forest forecast for the following six months layered on the same
+        timeline, compare regions, and drill into any single ZIP's full price
+        history.
         - **Supply-chain actors** — builders, material suppliers, contractors —
         use the *Supply Chain* tab to explore the residential construction
         pipeline (permits → starts → completions), material-cost pressure,

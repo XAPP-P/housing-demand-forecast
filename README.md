@@ -16,8 +16,10 @@ decision-support tool for two distinct audiences:
 - **Homebuyers and sellers** — view historical ZIP-code-level median home
   values across the United States, scrub through 25+ years of market
   history with a time slider, watch the market move with a play-through
-  animation, and drill into any single ZIP's full price history as a line
-  chart.
+  animation, see the Module 2 Random Forest forecast for the next six
+  months layered onto the same timeline (visually distinguished by a
+  cool-palette color scheme), and drill into any single ZIP's full
+  price history as a line chart.
 - **Supply-chain actors** — builders, material suppliers, and contractors
   can explore the residential construction pipeline (permits → starts →
   completions) alongside material-cost pressure, tariff-regime signals,
