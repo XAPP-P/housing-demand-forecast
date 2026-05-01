@@ -395,6 +395,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .legend-gradient.inactive { opacity: 0.28; }
   .legend-gradient.active { opacity: 1; }
+  .legend-row.hidden { display: none; }
 
   #map { height: 440px; border-radius: 4px; background: #eee; }
 
@@ -543,7 +544,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="chart-section">
     <div class="chart-header">
-      <h3>📈 Price History for a Single ZIP</h3>
+      <h3>📈 Price Trajectory for a Single ZIP (Historical + Forecast)</h3>
       <div class="chart-controls">
         <label for="zip-input">ZIP</label>
         <input type="text" id="zip-input" placeholder="5-digit" maxlength="5" inputmode="numeric" autocomplete="off" />
@@ -781,12 +782,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     const fc = isForecastIdx(currentIdx);
     currentMonthEl.firstChild.textContent = fmtMonthYear(currentIdx);
     currentMonthEl.classList.toggle('forecast', fc);
-    // Legend emphasis: active palette at full opacity, other muted.
+    // Show only the legend row matching the active palette.
     if (legendHistEl && legendFcEl) {
-      legendHistEl.classList.toggle('active', !fc);
-      legendHistEl.classList.toggle('inactive', fc);
-      legendFcEl.classList.toggle('active', fc);
-      legendFcEl.classList.toggle('inactive', !fc);
+      const histRow = legendHistEl.parentElement;
+      const fcRow   = legendFcEl.parentElement;
+      if (histRow) histRow.classList.toggle('hidden', fc);
+      if (fcRow && HAS_FORECAST) fcRow.classList.toggle('hidden', !fc);
     }
     slider.value = String(currentIdx);
     const parts = MONTHS[currentIdx].split('-');
